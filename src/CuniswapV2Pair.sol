@@ -10,8 +10,12 @@ interface IERC20 {
     function transfer(address to, uint256 amount) external;
 }
 
+error BalanceOverflow();
 error InsufficientLiquidityMinted();
 error InsufficientLiquidityBurned();
+error InsufficientOutputAmount();
+error InsufficientLiquidity();
+error InvalidK();
 error TransferFailed();
 
 contract ZuniswapV2Pair is ERC20, Math {
@@ -86,6 +90,26 @@ contract ZuniswapV2Pair is ERC20, Math {
         emit Burn(msg.sender, amount0, amount1);
     }
 
+    function swap(uint256 amount0Out, uint256 amount1Out, address to) public {
+        if (amount0Out == 0 && amount1Out == 0) {
+            revert InsufficientLiquidity();
+        }
+
+        (uint112 reserve0_, uint112 reserve1_, ) = getReserves();
+        uint256 balance0 = IERC20(token0).balanceOf(address(this)) - amount0Out;
+        uint256 balance1 = IERC20(token1).balanceOf(address(this)) - amount1Out;
+
+        if (balance0 * balance1 < uint256(reserve0_) * uint256(reserve1_))
+            revert InvalidK();
+
+        _update(balance0, balance1, reserve0_, reserve1_);
+
+        if (amount0Out > 0) _safeTransfer(token0, to, amount0Out);
+        if (amount1Out > 0) _safeTransfer(token1, to, amount1Out);
+
+        emit Swap(msg.sender, amount0Out, amount1Out, to);
+    }
+
     function sync() public {
         _update(
             IERC20(token0).balanceOf(address(this)),
@@ -97,9 +121,31 @@ contract ZuniswapV2Pair is ERC20, Math {
         return (reserve0, reserve1, 0);
     }
 
-    function _update(uint256 balance0, uint256 balance1) private {
+    function _update(
+        uint256 balance0,
+        uint256 balance1,
+        uint112 reserve0_,
+        uint112 reserve1_
+    ) private {
+        if (balance0 > type(uint112).max || balance1 > type(uint112).max)
+            revert BalanceOverflow();
+
+        unchecked {
+            uint32 timeElapsed = uint32(block.timestamp) - blockTimestampLast;
+
+            if (timeElapsed > 0 && reserve0_ > 0 && reserve1_ > 0) {
+                price0CumulativeLast +=
+                    uint256(UQ112x112.encode(reserve1_).uqdiv(reserve0_)) *
+                    timeElapsed;
+                price1CumulativeLast +=
+                    uint256(UQ112x112.encode(reserve0_).uqdiv(reserve1_)) *
+                    timeElapsed;
+            }
+        }
+
         reserve0 = uint112(balance0);
         reserve1 = uint112(balance1);
+        blockTimestampLast = uint32(block.timestamp);
 
         emit Sync(reserve0, reserve1);
     }
